@@ -1,0 +1,160 @@
+# CDC（Change Data Capture）の検証に使用するサービス群
+services:
+  # 変更データの取得元となるPostgreSQL
+  postgres:
+    # PostgreSQL 16の公式イメージを使用
+    image: postgres:16
+    environment:
+      # 初期作成する管理ユーザー名
+      POSTGRES_USER: postgres
+      # 初期作成する管理ユーザーのパスワード（ローカル検証用）
+      POSTGRES_PASSWORD: postgres
+      # コンテナ初回起動時に作成するデータベース名
+      POSTGRES_DB: appdb
+    # CDCに必要な論理レプリケーションを有効化し、複製用リソースの上限を設定
+    command: ["postgres", "-c", "wal_level=logical", "-c", "max_replication_slots=10", "-c", "max_wal_senders=10"]
+    ports:
+      # ホストの5433番ポートからコンテナの5432番ポートへ接続
+      - "127.0.0.1:5433:5432"
+    volumes:
+      # PostgreSQLのデータを名前付きボリュームへ永続化
+      - postgres_data:/var/lib/postgresql/data
+      # 初回起動時に実行する初期化SQLを読み取り専用で配置
+      - ./init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      # appdbが接続可能な状態かを確認
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      # 5秒ごとにヘルスチェックを実行
+      interval: 5s
+      # 1回の確認を3秒でタイムアウト
+      timeout: 3s
+      # 20回失敗した時点でunhealthyと判定
+      retries: 20
+
+  # CDCイベントの配信先となるKafkaブローカー
+  kafka:
+    # Apache Kafka 3.9.1の公式イメージを使用
+    image: apache/kafka:3.9.1
+    # Dockerネットワーク内で使用するホスト名
+    hostname: kafka
+    ports:
+      # ホストからKafkaへ接続するために9092番ポートを公開
+      - "127.0.0.1:9092:9092"
+    environment:
+      # KRaftクラスタ内で一意となるノードID
+      KAFKA_NODE_ID: 1
+      # 単一ノードをブローカー兼コントローラーとして動作させる
+      KAFKA_PROCESS_ROLES: broker,controller
+      # KRaftコントローラーの投票者を「ノードID@ホスト:ポート」で指定
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      # コンテナ内部用、コントローラー用、ホスト接続用の待受先を定義
+      KAFKA_LISTENERS: INTERNAL://:29092,CONTROLLER://:9093,EXTERNAL://:9092
+      # クライアントへ通知する内部接続先とホスト接続先を定義
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      # 各リスナーで暗号化・認証なしのPLAINTEXT通信を使用
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,CONTROLLER:PLAINTEXT,EXTERNAL:PLAINTEXT
+      # KRaftコントローラーが使用するリスナー名
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      # ブローカー間通信に使用するリスナー名
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      # 内部オフセットトピックの複製数（単一ノード用）
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      # トランザクション状態ログの複製数（単一ノード用）
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      # トランザクション状態ログへの書き込みに必要な最小同期レプリカ数
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      # 開発時の起動を速めるため、初回のコンシューマー再調整待ち時間を無効化
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # 存在しないトピックへのアクセス時にトピックを自動作成
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+    volumes:
+      # Kafkaのログデータを名前付きボリュームへ永続化
+      - kafka_data:/var/lib/kafka/data
+
+  # PostgreSQLの変更を取得してKafkaへ送信するKafka Connect
+  connect:
+    # connectディレクトリのDockerfileからカスタムイメージをビルド
+    build: ./connect
+    ports:
+      # Kafka Connect REST APIをホストの8083番ポートへ公開
+      - "127.0.0.1:8083:8083"
+    environment:
+      # Kafka Connectが接続するDockerネットワーク内のKafkaアドレス
+      CONNECT_BOOTSTRAP_SERVERS: kafka:29092
+      # REST APIが他のワーカーへ通知するホスト名
+      CONNECT_REST_ADVERTISED_HOST_NAME: connect
+      # Kafka Connectクラスタを識別するコンシューマーグループID
+      CONNECT_GROUP_ID: cdc-connect
+      # コネクター設定を保存する内部トピック
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect_configs
+      # 読み取り位置（オフセット）を保存する内部トピック
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect_offsets
+      # コネクターとタスクの状態を保存する内部トピック
+      CONNECT_STATUS_STORAGE_TOPIC: _connect_status
+      # 設定トピックの複製数（単一ノード用）
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      # オフセットトピックの複製数（単一ノード用）
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      # ステータストピックの複製数（単一ノード用）
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      # KafkaメッセージのキーをJSON形式へ変換
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      # キーのJSONにスキーマ情報を含める
+      CONNECT_KEY_CONVERTER_SCHEMAS_ENABLE: "true"
+      # Kafkaメッセージの値をJSON形式へ変換
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      # 値のJSONにスキーマ情報を含める
+      CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "true"
+      # Kafka Connectがコネクタープラグインを検索するディレクトリ
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      # Kafka Connect全体のログレベル
+      CONNECT_LOG4J_ROOT_LOGLEVEL: INFO
+      # コンテナ内でApplication Default Credentialsとして参照するファイル
+      GOOGLE_APPLICATION_CREDENTIALS: /gcp/adc.json
+    volumes:
+      # gcloudが作成したユーザーADCをコンテナへ読み取り専用で配置
+      - type: bind
+        source: ${APPDATA}/gcloud/application_default_credentials.json
+        target: /gcp/adc.json
+        read_only: true
+    depends_on:
+      # PostgreSQLが接続可能になってからKafka Connectを起動
+      postgres:
+        condition: service_healthy
+      # Kafkaコンテナが起動してからKafka Connectを起動
+      kafka:
+        condition: service_started
+    # 手動停止した場合を除き、終了時にコンテナを自動再起動
+    restart: unless-stopped
+
+  # Kafkaのトピック、イベント、Consumer Group、Connectorを表示するWeb UI
+  kafka-ui:
+    # Kafbat UIの公式コンテナイメージを使用
+    image: ghcr.io/kafbat/kafka-ui:latest
+    ports:
+      # ホストの8080番ポートでWeb UIを公開
+      - "127.0.0.1:8080:8080"
+    environment:
+      # UIに表示するKafkaクラスタ名
+      KAFKA_CLUSTERS_0_NAME: local
+      # UIが接続するDockerネットワーク内のKafkaアドレス
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      # UIに表示するKafka Connectクラスタ名
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: cdc-connect
+      # UIからKafka Connect REST APIへ接続するアドレス
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://connect:8083
+    depends_on:
+      # KafkaとKafka Connectの起動後にWeb UIを起動
+      kafka:
+        condition: service_started
+      connect:
+        condition: service_started
+    # 手動停止した場合を除き、終了時にコンテナを自動再起動
+    restart: unless-stopped
+
+# コンテナを再作成してもデータを保持する名前付きボリューム
+volumes:
+  # PostgreSQLデータ用
+  postgres_data:
+  # Kafkaデータ用
+  kafka_data:

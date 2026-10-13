@@ -1,0 +1,22 @@
+{
+  "name": "postgres-source",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "tasks.max": "1",
+    "database.hostname": "postgres",
+    "database.port": "5432",
+    "database.user": "postgres",
+    "database.password": "postgres",
+    "database.dbname": "appdb",
+    "topic.prefix": "cdc",
+    "plugin.name": "pgoutput",
+    "slot.name": "cdc_orders_slot",
+    "publication.autocreate.mode": "filtered",
+    "table.include.list": "public.orders",
+    "snapshot.mode": "initial",
+    "transforms": "unwrap",
+    "transforms.unwrap.type": "io.debezium.transforms.ExtractNewRecordState",
+    "transforms.unwrap.delete.tombstone.handling.mode": "rewrite",
+    "transforms.unwrap.add.fields": "op,table,source.ts_ms"
+  }
+}
