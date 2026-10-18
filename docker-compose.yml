@@ -107,6 +107,13 @@ services:
       CONNECT_VALUE_CONVERTER_SCHEMAS_ENABLE: "true"
       # Kafka Connectがコネクタープラグインを検索するディレクトリ
       CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      # Connector設定内の${env:...}を環境変数から解決するConfig Provider
+      CONNECT_CONFIG_PROVIDERS: env
+      CONNECT_CONFIG_PROVIDERS_ENV_CLASS: org.apache.kafka.common.config.provider.EnvVarConfigProvider
+      # Config Providerから参照できる環境変数をGCP_PROJECT_IDだけに制限
+      CONNECT_CONFIG_PROVIDERS_ENV_PARAM_ALLOWLIST_PATTERN: ^GCP_PROJECT_ID$
+      # .envに設定したGCPプロジェクトIDをKafka Connectへ渡す
+      GCP_PROJECT_ID: ${GCP_PROJECT_ID:?Set GCP_PROJECT_ID in .env}
       # Kafka Connect全体のログレベル
       CONNECT_LOG4J_ROOT_LOGLEVEL: INFO
       # コンテナ内でApplication Default Credentialsとして参照するファイル

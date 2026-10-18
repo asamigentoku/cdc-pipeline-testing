@@ -2,10 +2,28 @@
 
 PostgreSQLの`orders`テーブルに発生した変更をDebeziumで取得し、Kafkaを経由してBigQueryへ連携するCDC（Change Data Capture）の検証環境です。
 
-```text
-PostgreSQL → Debezium / Kafka Connect → Kafka → BigQuery Sink → BigQuery
-                                        ↕
-                                   Kafbat UI
+```mermaid
+flowchart LR
+    PostgreSQL[(PostgreSQL<br/>orders)]
+    Kafka[(Kafka<br/>cdc.public.orders)]
+    BigQuery[(BigQuery<br/>cdc.cdc_public_orders)]
+    Kafbat[Kafbat UI]
+    Env[.env<br/>GCP_PROJECT_ID]
+    ADC[Application Default Credentials]
+
+    subgraph Connect[Kafka Connect]
+        Source[Debezium PostgreSQL<br/>Source Connector]
+        Sink[BigQuery Sink<br/>Connector]
+    end
+
+    PostgreSQL -->|WAL / logical replication| Source
+    Source -->|CDC events| Kafka
+    Kafka --> Sink
+    Sink -->|streaming insert| BigQuery
+    Kafbat -. topic / connector monitoring .-> Kafka
+    Kafbat -.-> Connect
+    Env -. project configuration .-> Sink
+    ADC -. authentication .-> Sink
 ```
 
 ## 必要なもの
@@ -64,19 +82,21 @@ BigQueryに`cdc`データセットを作成します。東京リージョンを�
 bq --location=asia-northeast1 mk --dataset YOUR_GCP_PROJECT_ID:cdc
 ```
 
-### 1-3. Sink ConnectorのプロジェクトID
+### 1-3. `.env`にGCPプロジェクトIDを設定
 
-`config/sink.json`のプロジェクトIDを書き換えます。
+`.env.example`を`.env`へコピーします。
 
-```json
-"project": "REPLACE_WITH_GCP_PROJECT_ID"
+```powershell
+Copy-Item .env.example .env
 ```
 
-例えば、GCPプロジェクトIDが`my-cdc-project`の場合は次のようにします。
+作成した`.env`の`GCP_PROJECT_ID`を、使用するGCPプロジェクトIDに変更します。
 
-```json
-"project": "my-cdc-project"
+```dotenv
+GCP_PROJECT_ID=my-cdc-project
 ```
+
+Docker Composeが`.env`を自動的に読み込み、Kafka Connectの環境変数Config Providerが`config/sink.json`内の`${env:GCP_PROJECT_ID}`を実値へ解決します。`.env`はGitの管理対象外です。
 
 `keySource`は`APPLICATION_DEFAULT`に設定済みです。サービスアカウントの`keyfile`は使用しません。
 
@@ -111,6 +131,8 @@ docker compose logs -f connect
 ```
 
 ## 3. コネクターの登録
+
+各Connector設定の詳しい意味は[`config/README.md`](config/README.md)を参照してください。JSONファイルはKafka Connect REST APIへ直接送信するため、JSON内にはコメントを追加していません。
 
 Kafka Connect REST APIが応答することを確認します。
 

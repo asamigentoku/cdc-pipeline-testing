@@ -4,7 +4,7 @@
     "connector.class": "com.wepay.kafka.connect.bigquery.BigQuerySinkConnector",
     "tasks.max": "1",
     "topics": "cdc.public.orders",
-    "project": "REPLACE_WITH_GCP_PROJECT_ID",
+    "project": "${env:GCP_PROJECT_ID}",
     "defaultDataset": "cdc",
     "keySource": "APPLICATION_DEFAULT",
     "autoCreateTables": "true",
